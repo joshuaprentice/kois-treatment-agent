@@ -39,6 +39,8 @@ if uploaded_file:
         text = ""
         for page in doc:
             text += page.get_text()
+            with st.expander("🔍 Raw Extracted PDF Text"):
+    st.text(text[:3000])  # Adjust character count as needed
 
     med_responses = extract_responses_from_text(text, med_key)
     dent_responses = extract_responses_from_text(text, dent_key)
