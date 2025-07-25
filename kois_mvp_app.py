@@ -1,69 +1,71 @@
 
 import streamlit as st
 import fitz  # PyMuPDF
-import json
 import re
-from collections import defaultdict
+import json
+import openai
 
 # Load Kois interpretation keys
-@st.cache_data
-def load_interpretation_keys():
-    with open("kois_medical_key.json") as f_med, open("kois_dental_key.json") as f_dent:
-        medical_key = json.load(f_med)
-        dental_key = json.load(f_dent)
-    return medical_key, dental_key
+with open("kois_medical_key.json") as f:
+    med_key = json.load(f)
 
-# Extract Q&A pairs from the Oryx PDF
-def extract_question_responses_from_pdf(uploaded_file):
-    doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-    full_text = ""
-    for page in doc:
-        full_text += page.get_text()
+with open("kois_dental_key.json") as f:
+    dent_key = json.load(f)
 
-    responses = defaultdict(dict)
-    current_section = None
-    for line in full_text.split("\n"):
-        line = line.strip()
-        if "Medical History" in line:
-            current_section = "medical"
-        elif "Dental History" in line:
-            current_section = "dental"
-        match = re.match(r"^(Q\d+)[\s:–-]+(.+)", line)
-        if match and current_section:
-            qnum, response = match.groups()
-            responses[current_section][qnum.strip()] = response.strip()
+# Load the prompt template
+with open("kois_prompt.txt") as f:
+    prompt_template = f.read()
+
+st.title("🦷 Kois Treatment Planning Assistant (MVP)")
+st.write("**Upload Oryx Medical & Dental History PDF**")
+
+uploaded_file = st.file_uploader("Upload PDF", type="pdf")
+
+api_key = st.text_input("🔑 Enter your OpenAI API Key", type="password")
+
+def extract_responses_from_text(text, key):
+    responses = {}
+    for q_num in key:
+        pattern = rf"{q_num}[\.\)]\s*(.*?)\n"
+        match = re.search(pattern, text, re.DOTALL)
+        if match:
+            responses[q_num] = match.group(1).strip()
     return responses
 
-# Build GPT prompt
-def build_prompt(patient_data, kois_keys):
-    prompt = [
-        "You are a Kois-trained dentist. Based on the patient’s medical and dental history, identify relevant clinical risks and summarize findings in four categories: systemic, periodontal, biomechanical, and functional. Reference the Kois Interpretation Guidelines for consistency.\n"
-    ]
-    for section in ['medical', 'dental']:
-        prompt.append(f"\n### {section.upper()} HISTORY RESPONSES:")
-        for q, ans in patient_data.get(section, {}).items():
-            interp = kois_keys[section].get(q, {}).get("interpretation", "No guideline available.")
-            prompt.append(f"- {q}: {ans} → {interp}")
-    prompt.append("\n### Generate a summary organized under these headings: Systemic Risk, Periodontal Risk, Biomechanical Risk, Functional Risk. Highlight clinically significant findings, rationale, and any diagnostic flags.\n")
-    return "\n".join(prompt)
-
-# Streamlit UI
-st.title("🦷 Kois Treatment Planning Assistant (MVP)")
-
-uploaded_pdf = st.file_uploader("Upload Oryx Medical & Dental History PDF", type=["pdf"])
-if uploaded_pdf:
+if uploaded_file:
     st.success("✅ PDF Uploaded Successfully.")
-    medical_key, dental_key = load_interpretation_keys()
-    patient_data = extract_question_responses_from_pdf(uploaded_pdf)
+
+    with fitz.open(stream=uploaded_file.read(), filetype="pdf") as doc:
+        text = ""
+        for page in doc:
+            text += page.get_text()
+
+    med_responses = extract_responses_from_text(text, med_key)
+    dent_responses = extract_responses_from_text(text, dent_key)
 
     st.subheader("📋 Extracted Responses")
-    st.json(patient_data)
+    st.json({**med_responses, **dent_responses})
 
-    gpt_prompt = build_prompt(patient_data, {"medical": medical_key, "dental": dental_key})
+    # Format prompt by replacing placeholders
+    med_text = "\n".join([f"{k}: {v}" for k, v in med_responses.items()])
+    dent_text = "\n".join([f"{k}: {v}" for k, v in dent_responses.items()])
+    formatted_prompt = prompt_template.replace("### MEDICAL HISTORY RESPONSES:", f"### MEDICAL HISTORY RESPONSES:\n{med_text}")
+    formatted_prompt = formatted_prompt.replace("### DENTAL HISTORY RESPONSES:", f"### DENTAL HISTORY RESPONSES:\n{dent_text}")
 
     st.subheader("🧠 GPT-4 Prompt")
-    st.code(gpt_prompt, language="markdown")
+    st.code(formatted_prompt, language="markdown")
 
-    st.download_button("Download Prompt as .txt", gpt_prompt, file_name="kois_prompt.txt")
-
-    st.info("You can paste this prompt into OpenAI GPT-4 or your custom AI agent for interpretation.")
+    if api_key and st.button("🔍 Analyze with GPT-4"):
+        try:
+            openai.api_key = api_key
+            with st.spinner("Contacting GPT-4..."):
+                response = openai.ChatCompletion.create(
+                    model="gpt-4",
+                    messages=[{"role": "user", "content": formatted_prompt}],
+                    temperature=0.3,
+                )
+                result = response["choices"][0]["message"]["content"]
+                st.subheader("🦷 GPT-4 Interpretation")
+                st.markdown(result)
+        except Exception as e:
+            st.error(f"Error: {e}")
