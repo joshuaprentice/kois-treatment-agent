@@ -1,3 +1,4 @@
 streamlit
 openai
-pymupdf
+PyMuPDF
+python-dotenv
